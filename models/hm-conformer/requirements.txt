@@ -1,0 +1,14 @@
+# Core dependencies for HM-Conformer inference endpoint
+torch>=1.12.0
+torchaudio>=0.12.0
+numpy>=1.21.0
+soundfile>=0.10.0
+librosa>=0.9.0
+
+# Audio augmentation (used during training, but needed for model imports)
+torch-audiomentations>=0.11.0
+
+# Additional utilities
+scipy>=1.7.0
+matplotlib>=3.5.0
+

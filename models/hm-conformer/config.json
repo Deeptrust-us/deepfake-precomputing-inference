@@ -1,0 +1,37 @@
+{
+  "model_name": "HM-Conformer",
+  "task": "audio-classification",
+  "description": "HM-Conformer deepfake speech detection model for ASVspoof detection",
+  "model_type": "custom",
+  "framework": "pytorch",
+  "input_format": "audio",
+  "output_format": "json",
+  "sample_rate": 16000,
+  "audio_duration_seconds": 4.0,
+  "architecture": {
+    "frontend": "HM_Conformer",
+    "backend": "CLSBackend",
+    "loss": "OCSoftmax",
+    "num_backends": 5,
+    "feature_extractor": "LFCC"
+  },
+  "checkpoints": {
+    "frontend": "check_point_DF_frontend_20.pt",
+    "backend0": "check_point_DF_backend0_20.pt",
+    "backend1": "check_point_DF_backend1_20.pt",
+    "backend2": "check_point_DF_backend2_20.pt",
+    "backend3": "check_point_DF_backend3_20.pt",
+    "backend4": "check_point_DF_backend4_20.pt",
+    "loss0": "check_point_DF_loss0_20.pt",
+    "loss1": "check_point_DF_loss1_20.pt",
+    "loss2": "check_point_DF_loss2_20.pt",
+    "loss3": "check_point_DF_loss3_20.pt",
+    "loss4": "check_point_DF_loss4_20.pt"
+  },
+  "inference": {
+    "batch_size": 1,
+    "device": "cuda",
+    "augmentation": false
+  }
+}
+
