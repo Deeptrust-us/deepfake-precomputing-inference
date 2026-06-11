@@ -218,3 +218,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Model checkpoints / weights
+checkpoints/hm-conformer/*.pt
+checkpoints/quad-stream/*.pth
