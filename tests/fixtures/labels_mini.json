@@ -1,0 +1,27 @@
+[
+  {
+    "id": "0000407282",
+    "filename": "0000407282.wav",
+    "original_path": "/tmp/dataset/real/en/sample.wav",
+    "label": "real",
+    "language": "en",
+    "model_or_speaker": "speaker_a"
+  },
+  {
+    "id": "0000407283",
+    "filename": "0000407283.wav",
+    "original_path": "/tmp/dataset/fake/en/OuteTTS/sample.wav",
+    "label": "fake",
+    "language": "en",
+    "model_or_speaker": "OuteTTS"
+  },
+  {
+    "id": "0000407284",
+    "filename": "0000407284.wav",
+    "original_path": "/tmp/dataset/real/fr/sample.wav",
+    "label": "real",
+    "language": "fr",
+    "model_or_speaker": "speaker_b",
+    "split": "test"
+  }
+]
