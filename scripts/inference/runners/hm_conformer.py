@@ -7,6 +7,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from tqdm import tqdm
+
 from ..scoring import compute_error_type, scores_from_hm_conformer
 
 
@@ -82,7 +84,7 @@ class HmConformerRunner:
         skip_missing: bool = False,
     ) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
-        for sample in samples:
+        for sample in tqdm(samples, desc=f"{model_name} inference", unit="sample"):
             audio_path = Path(sample["resolved_audio_path"])
             if not audio_path.exists():
                 if skip_missing:

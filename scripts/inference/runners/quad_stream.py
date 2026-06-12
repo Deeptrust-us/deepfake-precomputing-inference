@@ -11,6 +11,7 @@ from typing import Any
 import torch
 import yaml
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from ..scoring import compute_error_type, scores_from_quad_stream
 
@@ -173,7 +174,11 @@ class QuadStreamRunner:
         )
 
         results: list[dict[str, Any]] = []
-        with torch.no_grad():
+        with torch.no_grad(), tqdm(
+            total=len(samples),
+            desc=f"{model_name} inference",
+            unit="sample",
+        ) as pbar:
             for batch in dataloader:
                 sample_id = batch["sample_id"]
                 if isinstance(sample_id, (list, tuple)):
@@ -214,6 +219,7 @@ class QuadStreamRunner:
                             "checkpoint_path": str(self.checkpoint_path),
                         }
                     )
+                    pbar.update(1)
 
         if skip_missing:
             processed_ids = {r["sample_id"] for r in results}
