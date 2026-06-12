@@ -7,7 +7,6 @@ predictions per audio file (`sample_id`) to compute file-level metrics.
 import os
 import sys
 import argparse
-import pickle
 import yaml
 import torch
 from torch.utils.data import DataLoader
@@ -22,6 +21,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from src.models.quad_stream import QuadStreamModel
 from src.data.dataset import DeepfakeDataset
+from src.utils.checkpoint import load_checkpoint, remap_state_dict_for_compat
 from src.utils.metrics import compute_segment_metrics, compute_file_metrics
 
 
@@ -92,80 +92,6 @@ def plot_confusion_matrix(y_true, y_pred, save_path):
     plt.tight_layout()
     plt.savefig(save_path)
     plt.close()
-
-
-def _torch_load_compat(path: str, device, *, weights_only: bool):
-    """torch.load wrapper compatible with older torch versions without weights_only."""
-    try:
-        return torch.load(path, map_location=device, weights_only=weights_only)
-    except TypeError:
-        # Older torch: no weights_only kwarg
-        return torch.load(path, map_location=device)
-
-
-def load_checkpoint(path: str, device, *, trust_checkpoint: bool = False):
-    """Load a checkpoint with PyTorch 2.6+ safe defaults.
-
-    - Default: tries weights_only=True, and allowlists numpy scalar types if needed.
-    - If trust_checkpoint=True: loads with weights_only=False (unsafe for untrusted files).
-    """
-    if trust_checkpoint:
-        print("Loading checkpoint with weights_only=False (trusted checkpoint)")
-        return _torch_load_compat(path, device, weights_only=False)
-
-    try:
-        return _torch_load_compat(path, device, weights_only=True)
-    except pickle.UnpicklingError as e:
-        # Common case: checkpoint contains numpy scalar metadata (e.g., metrics)
-        try:
-            if hasattr(torch, "serialization") and hasattr(torch.serialization, "safe_globals"):
-                with torch.serialization.safe_globals([np.core.multiarray.scalar, np.dtype]):
-                    return _torch_load_compat(path, device, weights_only=True)
-            if hasattr(torch, "serialization") and hasattr(torch.serialization, "add_safe_globals"):
-                torch.serialization.add_safe_globals([np.core.multiarray.scalar, np.dtype])
-                return _torch_load_compat(path, device, weights_only=True)
-        except Exception:
-            pass
-
-        raise RuntimeError(
-            "Failed to load checkpoint safely (weights_only=True).\n"
-            "If you trust this checkpoint (e.g., you trained it yourself), re-run with --trust-checkpoint "
-            "to load with weights_only=False."
-        ) from e
-
-
-def _remap_state_dict_for_compat(state_dict: dict) -> tuple[dict, list[str]]:
-    """Best-effort remaps for older checkpoints when module layouts changed.
-
-    Returns:
-        (new_state_dict, notes)
-    """
-    if not isinstance(state_dict, dict):
-        return state_dict, []
-
-    sd = dict(state_dict)  # shallow copy
-    notes: list[str] = []
-
-    # Backwards compat: older QuadStreamModel fusion started with Linear, but current fusion starts with Dropout.
-    # Old: fusion.0 = Linear(feature_dim*4 -> fusion_dim), fusion.3 = Linear(fusion_dim -> fusion_dim//2)
-    # New: fusion.1 and fusion.4 are those Linear layers (because fusion.0 is now Dropout).
-    if ("fusion.0.weight" in sd or "fusion.0.bias" in sd) and ("fusion.1.weight" not in sd and "fusion.1.bias" not in sd):
-        for suffix in ("weight", "bias"):
-            old_k = f"fusion.0.{suffix}"
-            new_k = f"fusion.1.{suffix}"
-            if old_k in sd and new_k not in sd:
-                sd[new_k] = sd.pop(old_k)
-        notes.append("Remapped fusion.0.{weight,bias} -> fusion.1.{weight,bias} (added leading Dropout in fusion).")
-
-    if ("fusion.3.weight" in sd or "fusion.3.bias" in sd) and ("fusion.4.weight" not in sd and "fusion.4.bias" not in sd):
-        for suffix in ("weight", "bias"):
-            old_k = f"fusion.3.{suffix}"
-            new_k = f"fusion.4.{suffix}"
-            if old_k in sd and new_k not in sd:
-                sd[new_k] = sd.pop(old_k)
-        notes.append("Remapped fusion.3.{weight,bias} -> fusion.4.{weight,bias} (added leading Dropout in fusion).")
-
-    return sd, notes
 
 
 def main():
@@ -251,7 +177,7 @@ def main():
     try:
         model.load_state_dict(state_dict, strict=True)
     except RuntimeError as e:
-        remapped, notes = _remap_state_dict_for_compat(state_dict)
+        remapped, notes = remap_state_dict_for_compat(state_dict)
         if notes:
             print("Checkpoint compatibility remap applied:")
             for n in notes:

@@ -46,8 +46,8 @@ class QuadStreamRunner:
         if str(quad_stream_dir) not in sys.path:
             sys.path.insert(0, str(quad_stream_dir))
 
-        from scripts.evaluate import load_checkpoint, _remap_state_dict_for_compat
         from src.models.quad_stream import QuadStreamModel
+        from src.utils.checkpoint import load_checkpoint, remap_state_dict_for_compat
 
         with open(config_path, "r", encoding="utf-8") as f:
             config = yaml.safe_load(f)
@@ -71,7 +71,7 @@ class QuadStreamRunner:
         try:
             model.load_state_dict(state_dict, strict=True)
         except RuntimeError:
-            remapped, _ = _remap_state_dict_for_compat(state_dict)
+            remapped, _ = remap_state_dict_for_compat(state_dict)
             model.load_state_dict(remapped, strict=False)
 
         model.eval()
