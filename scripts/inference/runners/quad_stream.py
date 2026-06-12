@@ -78,6 +78,66 @@ class QuadStreamRunner:
         self._config = config
         return self._model
 
+    def dry_run(
+        self,
+        samples: list[dict[str, Any]],
+        *,
+        dataset_root: Path,
+        labels_file: Path,
+        skip_missing: bool = False,
+    ) -> dict[str, Any]:
+        if not self.checkpoint_path.exists():
+            raise FileNotFoundError(f"Checkpoint path not found: {self.checkpoint_path}")
+
+        quad_stream_dir, config_path = self._repo_paths()
+        if not config_path.exists():
+            raise FileNotFoundError(f"Quad-stream config not found: {config_path}")
+
+        if str(quad_stream_dir) not in sys.path:
+            sys.path.insert(0, str(quad_stream_dir))
+
+        from src.data.dataset import DeepfakeDataset
+
+        features_dir = self.features_dir or (dataset_root / "features")
+        if not features_dir.exists():
+            raise FileNotFoundError(f"Features directory not found: {features_dir}")
+
+        self._load_model()
+        dataset = DeepfakeDataset(
+            dataset_root=dataset_root,
+            labels_file=labels_file,
+            features_dir=features_dir,
+        )
+
+        ready_ids: list[str] = []
+        missing: list[dict[str, str]] = []
+        feature_kinds = ("segment_stft", "segment_logmel", "full_stft", "full_logmel")
+        for sample in samples:
+            stem = Path(sample["filename"]).stem
+            try:
+                for kind in feature_kinds:
+                    dataset._feature_path(kind, stem)
+                ready_ids.append(sample["sample_id"])
+            except FileNotFoundError as exc:
+                missing.append({"sample_id": sample["sample_id"], "error": str(exc)})
+
+        if missing and not skip_missing:
+            first = missing[0]
+            raise FileNotFoundError(
+                f"Missing precomputed features for {first['sample_id']}: {first['error']} "
+                f"({len(missing)} missing of {len(samples)} samples)"
+            )
+
+        return {
+            "model_loaded": True,
+            "config_path": str(config_path),
+            "features_dir": str(features_dir),
+            "labels_entries": len(dataset),
+            "num_ready": len(ready_ids),
+            "num_missing": len(missing),
+            "missing": missing,
+        }
+
     def run(
         self,
         samples: list[dict[str, Any]],

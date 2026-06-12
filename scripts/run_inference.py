@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -86,7 +87,69 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Load quad-stream checkpoint with weights_only=False.",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate pipeline inputs and model loading without running inference or writing outputs.",
+    )
     return parser.parse_args()
+
+
+def _validate_output_dir(output_dir: Path) -> None:
+    if output_dir.exists() and not output_dir.is_dir():
+        raise NotADirectoryError(f"Output path exists but is not a directory: {output_dir}")
+
+    parent = output_dir if not output_dir.exists() else output_dir
+    while not parent.exists():
+        parent = parent.parent
+        if parent == parent.parent:
+            break
+
+    if parent.exists() and not os.access(parent, os.W_OK):
+        raise PermissionError(f"Output directory is not writable: {output_dir}")
+
+
+def _print_dry_run_report(
+    *,
+    args: argparse.Namespace,
+    run_id: str,
+    run_dir: Path,
+    samples: list[dict],
+    report: dict,
+) -> None:
+    print("[dry-run] Pipeline validation complete (no inference, no writes)")
+    print(f"  model:       {args.model_name}")
+    print(f"  run_id:      {run_id}")
+    print(f"  output:      {run_dir}")
+    print(f"  metadata:    {args.metadata_path} ({len(samples)} samples)")
+    print(f"  checkpoint:  {args.checkpoint_path}")
+    print("  model load:  ok")
+
+    if args.model_name == "quad-stream":
+        features_dir = report.get("features_dir") or args.features_dir or (args.dataset_root / "features")
+        print(f"  config:      {report.get('config_path', 'n/a')}")
+        print(f"  features:    {features_dir}")
+        if "labels_entries" in report:
+            print(f"  labels:      {report['labels_entries']} entries readable by quad-stream dataset")
+
+    print(
+        f"  inputs:      {report['num_ready']}/{len(samples)} ready, "
+        f"{report['num_missing']} missing"
+    )
+
+    missing = report.get("missing", [])
+    if missing:
+        preview = missing[:5]
+        for item in preview:
+            detail = item.get("path") or item.get("error", "")
+            print(f"    - {item['sample_id']}: {detail}")
+        if len(missing) > len(preview):
+            print(f"    ... and {len(missing) - len(preview)} more")
+
+    print("  would write:")
+    print(f"    - {run_dir / 'samples.parquet'}")
+    print(f"    - {run_dir / 'results.parquet'}")
+    print(f"    - {run_dir / 'manifest.json'}")
 
 
 def main() -> int:
@@ -100,6 +163,26 @@ def main() -> int:
         raise FileNotFoundError(f"Metadata file not found: {metadata_path}")
 
     samples = build_samples_table(metadata_path, args.dataset_root, limit=args.limit)
+
+    if args.dry_run:
+        _validate_output_dir(args.output_dir)
+        if args.model_name == "hm-conformer":
+            runner = HmConformerRunner(args.checkpoint_path)
+            report = runner.dry_run(samples, skip_missing=args.skip_missing)
+        else:
+            runner = QuadStreamRunner(
+                args.checkpoint_path,
+                features_dir=args.features_dir,
+                trust_checkpoint=args.trust_checkpoint,
+            )
+            report = runner.dry_run(
+                samples,
+                dataset_root=args.dataset_root,
+                labels_file=metadata_path,
+                skip_missing=args.skip_missing,
+            )
+        _print_dry_run_report(args=args, run_id=run_id, run_dir=run_dir, samples=samples, report=report)
+        return 0
 
     if args.model_name == "hm-conformer":
         runner = HmConformerRunner(args.checkpoint_path)

@@ -40,6 +40,40 @@ class HmConformerRunner:
             raise RuntimeError(result[0].get("error", "Unknown HM-Conformer inference error"))
         return {"deepfake_raw": float(result[0]["deepfake_score"])}
 
+    def dry_run(
+        self,
+        samples: list[dict[str, Any]],
+        *,
+        skip_missing: bool = False,
+    ) -> dict[str, Any]:
+        if not self.checkpoint_path.exists():
+            raise FileNotFoundError(f"Checkpoint path not found: {self.checkpoint_path}")
+
+        self._load_handler()
+
+        ready_ids: list[str] = []
+        missing: list[dict[str, str]] = []
+        for sample in samples:
+            audio_path = Path(sample["resolved_audio_path"])
+            if audio_path.exists():
+                ready_ids.append(sample["sample_id"])
+            else:
+                missing.append({"sample_id": sample["sample_id"], "path": str(audio_path)})
+
+        if missing and not skip_missing:
+            first = missing[0]
+            raise FileNotFoundError(
+                f"Audio file not found for {first['sample_id']}: {first['path']} "
+                f"({len(missing)} missing of {len(samples)} samples)"
+            )
+
+        return {
+            "model_loaded": True,
+            "num_ready": len(ready_ids),
+            "num_missing": len(missing),
+            "missing": missing,
+        }
+
     def run(
         self,
         samples: list[dict[str, Any]],
