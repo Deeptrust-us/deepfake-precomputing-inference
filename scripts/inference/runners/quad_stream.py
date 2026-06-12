@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from pathlib import Path
@@ -18,6 +19,45 @@ from ..scoring import compute_error_type, scores_from_quad_stream
 def _debug_log(enabled: bool, message: str) -> None:
     if enabled:
         print(f"[debug][quad-stream] {message}", file=sys.stderr, flush=True)
+
+
+def _configure_cpu_threads(num_threads: int | None, *, debug: bool = False) -> int:
+    cpu_count = os.cpu_count() or 1
+    threads = num_threads if num_threads is not None else min(4, cpu_count)
+    threads = max(1, threads)
+
+    torch.set_num_threads(threads)
+    if hasattr(torch, "set_num_interop_threads"):
+        torch.set_num_interop_threads(max(1, min(2, threads // 2)))
+
+    for env_name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        os.environ[env_name] = str(threads)
+
+    _debug_log(debug, f"configured cpu threads={threads} (available={cpu_count})")
+    return threads
+
+
+def _default_num_workers(cpu_threads: int) -> int:
+    cpu_count = os.cpu_count() or 1
+    if cpu_count <= 1:
+        return 0
+    return max(1, min(4, cpu_count - max(1, cpu_threads // 2)))
+
+
+def _entries_from_samples(samples: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for sample in samples:
+        label = sample["ground_truth"]
+        if label == "deepfake":
+            label = "fake"
+        entries.append(
+            {
+                "filename": sample["filename"],
+                "label": label,
+                "id": sample["sample_id"],
+            }
+        )
+    return entries
 
 
 class QuadStreamRunner:
@@ -120,27 +160,23 @@ class QuadStreamRunner:
 
         _debug_log(debug, "dry-run: loading model")
         self._load_model(debug=debug)
-        _debug_log(debug, f"dry-run: building dataset features_dir={features_dir}")
+        entries = _entries_from_samples(samples)
+        _debug_log(debug, f"dry-run: building dataset features_dir={features_dir} entries={len(entries)}")
         dataset = DeepfakeDataset(
             dataset_root=dataset_root,
-            labels_file=labels_file,
             features_dir=features_dir,
+            entries=entries,
+            skip_missing=skip_missing,
             debug=debug,
         )
 
-        ready_ids: list[str] = []
-        missing: list[dict[str, str]] = []
-        feature_kinds = ("segment_stft", "segment_logmel", "full_stft", "full_logmel")
-        for sample in samples:
-            stem = Path(sample["filename"]).stem
-            try:
-                for kind in feature_kinds:
-                    if debug:
-                        _debug_log(debug, f"dry-run: resolving features sample_id={sample['sample_id']} kind={kind}")
-                    dataset._feature_path(kind, stem)
-                ready_ids.append(sample["sample_id"])
-            except FileNotFoundError as exc:
-                missing.append({"sample_id": sample["sample_id"], "error": str(exc)})
+        ready_ids = [Path(entry["filename"]).stem for entry in dataset.entries]
+        ready_set = set(ready_ids)
+        missing = [
+            {"sample_id": sample["sample_id"], "error": "missing precomputed features"}
+            for sample in samples
+            if sample["sample_id"] not in ready_set
+        ]
 
         if missing and not skip_missing:
             first = missing[0]
@@ -168,6 +204,9 @@ class QuadStreamRunner:
         model_name: str = "quad-stream",
         skip_missing: bool = False,
         debug: bool = False,
+        batch_size: int | None = None,
+        num_workers: int | None = None,
+        cpu_threads: int | None = None,
     ) -> list[dict[str, Any]]:
         quad_stream_dir, config_path = self._repo_paths()
         if str(quad_stream_dir) not in sys.path:
@@ -176,34 +215,50 @@ class QuadStreamRunner:
         from src.data.dataset import DeepfakeDataset
 
         features_dir = self.features_dir or (dataset_root / "features")
+        configured_threads = _configure_cpu_threads(cpu_threads, debug=debug)
+        resolved_workers = (
+            _default_num_workers(configured_threads) if num_workers is None else max(0, num_workers)
+        )
+
         _debug_log(debug, "run: loading model")
         model = self._load_model(debug=debug)
         config = self._config
 
-        _debug_log(debug, f"run: building dataset features_dir={features_dir} labels={labels_file}")
+        entries = _entries_from_samples(samples)
+        _debug_log(debug, f"run: building dataset features_dir={features_dir} entries={len(entries)}")
         dataset = DeepfakeDataset(
             dataset_root=dataset_root,
-            labels_file=labels_file,
             features_dir=features_dir,
+            entries=entries,
+            skip_missing=skip_missing,
             debug=debug,
         )
 
         sample_lookup = {s["sample_id"]: s for s in samples}
-        batch_size = config["training"]["batch_size"]
-        _debug_log(debug, f"run: creating dataloader batch_size={batch_size} target_samples={len(samples)}")
-        dataloader = DataLoader(
-            dataset,
-            batch_size=batch_size,
-            shuffle=False,
-            num_workers=0,
-            pin_memory=False,
+        resolved_batch_size = batch_size or config["training"]["batch_size"]
+        _debug_log(
+            debug,
+            f"run: creating dataloader batch_size={resolved_batch_size} "
+            f"num_workers={resolved_workers} dataset_len={len(dataset)}",
         )
+
+        loader_kwargs: dict[str, Any] = {
+            "batch_size": resolved_batch_size,
+            "shuffle": False,
+            "num_workers": resolved_workers,
+            "pin_memory": torch.cuda.is_available(),
+        }
+        if resolved_workers > 0:
+            loader_kwargs["persistent_workers"] = True
+            loader_kwargs["prefetch_factor"] = 2
+
+        dataloader = DataLoader(dataset, **loader_kwargs)
 
         results: list[dict[str, Any]] = []
         batch_index = 0
         data_iter = iter(dataloader)
         with torch.no_grad(), tqdm(
-            total=len(samples),
+            total=len(dataset),
             desc=f"{model_name} inference",
             unit="sample",
         ) as pbar:
@@ -223,13 +278,6 @@ class QuadStreamRunner:
                 else:
                     sample_ids = [sample_id]
 
-                filtered = [sid for sid in sample_ids if sid in sample_lookup]
-                if not filtered:
-                    if debug:
-                        _debug_log(debug, f"batch {batch_index}: skipped (no samples in --limit set)")
-                    batch_index += 1
-                    continue
-
                 transfer_started = time.perf_counter()
                 segment_stft = batch["segment_stft"].to(self._device)
                 segment_logmel = batch["segment_logmel"].to(self._device)
@@ -246,7 +294,7 @@ class QuadStreamRunner:
                 if debug:
                     _debug_log(
                         debug,
-                        f"batch {batch_index}: sample_ids={filtered} "
+                        f"batch {batch_index}: sample_ids={sample_ids} "
                         f"fetch_ms={fetch_ms:.1f} transfer_ms={transfer_ms:.1f} "
                         f"infer_ms={infer_ms:.1f}",
                     )
@@ -278,7 +326,7 @@ class QuadStreamRunner:
             missing = [s["sample_id"] for s in samples if s["sample_id"] not in processed_ids]
             if missing:
                 print(f"Skipped {len(missing)} samples with missing precomputed features.")
-        elif len(results) != len(samples):
+        elif len(results) != len(dataset):
             processed_ids = {r["sample_id"] for r in results}
             missing = [s["sample_id"] for s in samples if s["sample_id"] not in processed_ids]
             raise FileNotFoundError(

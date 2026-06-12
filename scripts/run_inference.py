@@ -97,6 +97,24 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Print per-stage timing and progress to stderr (useful for diagnosing bottlenecks).",
     )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        help="Quad-stream inference batch size (default: model config training.batch_size).",
+    )
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=None,
+        help="Quad-stream DataLoader worker processes (default: auto based on CPU count).",
+    )
+    parser.add_argument(
+        "--cpu-threads",
+        type=int,
+        default=None,
+        help="PyTorch/BLAS CPU threads for quad-stream inference (default: min(4, cpu_count)).",
+    )
     return parser.parse_args()
 
 
@@ -205,6 +223,9 @@ def main() -> int:
             labels_file=metadata_path,
             skip_missing=args.skip_missing,
             debug=args.debug,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            cpu_threads=args.cpu_threads,
         )
 
     if args.skip_missing:

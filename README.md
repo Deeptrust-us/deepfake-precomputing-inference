@@ -147,6 +147,10 @@ Useful flags:
 |---|---|
 | `--limit N` | Process only the first N samples (smoke test) |
 | `--skip-missing` | Skip samples with missing audio/features instead of failing |
+| `--debug` | Print per-stage timing to stderr |
+| `--batch-size N` | Quad-stream batch size (default from model config) |
+| `--num-workers N` | Quad-stream DataLoader workers (default: auto) |
+| `--cpu-threads N` | PyTorch/BLAS threads for quad-stream CPU inference |
 | `--run-id ID` | Override the default `YYYY-MM-DD_<model-name>` folder name |
 
 Example output:

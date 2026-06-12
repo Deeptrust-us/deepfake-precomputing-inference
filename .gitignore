@@ -222,3 +222,5 @@ __marimo__/
 # Model checkpoints / weights
 checkpoints/hm-conformer/*.pt
 checkpoints/quad-stream/*.pth
+
+.DS_Store
