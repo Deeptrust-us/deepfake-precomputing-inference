@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -41,10 +43,13 @@ class DeepfakeDataset(Dataset):
         dataset_root: str | Path,
         labels_file: Optional[str | Path] = None,
         features_dir: Optional[str | Path] = None,
+        *,
+        debug: bool = False,
     ):
         self.dataset_root = Path(dataset_root)
         self.labels_file = Path(labels_file) if labels_file is not None else self.dataset_root / "labels.json"
         self.features_dir = Path(features_dir) if features_dir is not None else self.dataset_root / "features"
+        self.debug = debug
 
         if not self.labels_file.exists():
             raise FileNotFoundError(f"labels.json not found: {self.labels_file}")
@@ -69,10 +74,24 @@ class DeepfakeDataset(Dataset):
     def __len__(self) -> int:
         return len(self.entries)
 
+    def _debug(self, message: str) -> None:
+        if self.debug:
+            print(f"[debug][dataset] {message}", file=sys.stderr, flush=True)
+
     def _feature_path(self, kind: str, stem: str) -> Path:
+        started = time.perf_counter()
         if kind in ("segment_stft", "segment_logmel"):
             seg_dir = self.features_dir / kind
-            matches = sorted(seg_dir.glob(f"{stem}_*.npy"))
+            pattern = f"{stem}_*.npy"
+            if self.debug:
+                self._debug(f"glob start kind={kind} stem={stem} dir={seg_dir}")
+            matches = sorted(seg_dir.glob(pattern))
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            if self.debug:
+                self._debug(
+                    f"glob done kind={kind} stem={stem} matches={len(matches)} "
+                    f"elapsed_ms={elapsed_ms:.1f}"
+                )
             if len(matches) != 1:
                 raise FileNotFoundError(
                     f"Expected exactly one segment feature for kind={kind!r}, stem={stem!r} "
@@ -80,10 +99,15 @@ class DeepfakeDataset(Dataset):
                 )
             return matches[0]
         if kind in ("full_stft", "full_logmel"):
-            return self.features_dir / kind / f"{stem}.npy"
+            path = self.features_dir / kind / f"{stem}.npy"
+            if self.debug:
+                elapsed_ms = (time.perf_counter() - started) * 1000.0
+                self._debug(f"resolve kind={kind} stem={stem} path={path} elapsed_ms={elapsed_ms:.1f}")
+            return path
         raise ValueError(f"Unknown feature kind: {kind!r}")
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
+        item_started = time.perf_counter()
         entry = self.entries[idx]
         filename = entry.get("filename")
         if not filename:
@@ -95,6 +119,8 @@ class DeepfakeDataset(Dataset):
 
         y = _label_to_int(label_str)
         stem = Path(filename).stem
+        if self.debug:
+            self._debug(f"getitem start idx={idx} stem={stem}")
 
         paths = {
             "segment_stft": self._feature_path("segment_stft", stem),
@@ -110,8 +136,20 @@ class DeepfakeDataset(Dataset):
                 f"Expected under {self.features_dir}."
             )
 
-        feats = {k: np.load(str(p)) for k, p in paths.items()}
+        feats: Dict[str, np.ndarray] = {}
+        for kind, path in paths.items():
+            load_started = time.perf_counter()
+            feats[kind] = np.load(str(path))
+            if self.debug:
+                load_ms = (time.perf_counter() - load_started) * 1000.0
+                self._debug(f"np.load kind={kind} path={path.name} elapsed_ms={load_ms:.1f}")
+
+        tensor_started = time.perf_counter()
         tensors = {k: torch.from_numpy(v).to(torch.float32) for k, v in feats.items()}
+        if self.debug:
+            tensor_ms = (time.perf_counter() - tensor_started) * 1000.0
+            total_ms = (time.perf_counter() - item_started) * 1000.0
+            self._debug(f"tensor convert elapsed_ms={tensor_ms:.1f} getitem total_ms={total_ms:.1f}")
 
         # Ensure shapes are (1, 224, 224)
         for k, t in tensors.items():

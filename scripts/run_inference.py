@@ -92,6 +92,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Validate pipeline inputs and model loading without running inference or writing outputs.",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Print per-stage timing and progress to stderr (useful for diagnosing bottlenecks).",
+    )
     return parser.parse_args()
 
 
@@ -180,13 +185,14 @@ def main() -> int:
                 dataset_root=args.dataset_root,
                 labels_file=metadata_path,
                 skip_missing=args.skip_missing,
+                debug=args.debug,
             )
         _print_dry_run_report(args=args, run_id=run_id, run_dir=run_dir, samples=samples, report=report)
         return 0
 
     if args.model_name == "hm-conformer":
         runner = HmConformerRunner(args.checkpoint_path)
-        results = runner.run(samples, skip_missing=args.skip_missing)
+        results = runner.run(samples, skip_missing=args.skip_missing, debug=args.debug)
     else:
         runner = QuadStreamRunner(
             args.checkpoint_path,
@@ -198,6 +204,7 @@ def main() -> int:
             dataset_root=args.dataset_root,
             labels_file=metadata_path,
             skip_missing=args.skip_missing,
+            debug=args.debug,
         )
 
     if args.skip_missing:

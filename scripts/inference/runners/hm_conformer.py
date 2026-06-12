@@ -12,12 +12,17 @@ from tqdm import tqdm
 from ..scoring import compute_error_type, scores_from_hm_conformer
 
 
+def _debug_log(enabled: bool, message: str) -> None:
+    if enabled:
+        print(f"[debug][hm-conformer] {message}", file=sys.stderr, flush=True)
+
+
 class HmConformerRunner:
     def __init__(self, checkpoint_path: Path):
         self.checkpoint_path = checkpoint_path
         self._handler = None
 
-    def _load_handler(self):
+    def _load_handler(self, *, debug: bool = False):
         if self._handler is not None:
             return self._handler
 
@@ -32,12 +37,20 @@ class HmConformerRunner:
 
         from handler import EndpointHandler
 
+        _debug_log(debug, f"loading handler from {model_dir}")
+        load_started = time.perf_counter()
         self._handler = EndpointHandler(path=str(model_dir))
+        _debug_log(debug, f"handler loaded elapsed_ms={(time.perf_counter() - load_started) * 1000.0:.1f}")
         return self._handler
 
-    def predict_file(self, audio_path: Path) -> dict[str, float]:
-        handler = self._load_handler()
-        result = handler({"inputs": str(audio_path)})
+    def predict_file(self, audio_path: Path, *, debug: bool = False) -> dict[str, float]:
+        handler = self._load_handler(debug=debug)
+        if debug:
+            _debug_log(debug, f"predict start path={audio_path}")
+        predict_started = time.perf_counter()
+        result = handler({"inputs": str(audio_path.resolve())})
+        if debug:
+            _debug_log(debug, f"predict done elapsed_ms={(time.perf_counter() - predict_started) * 1000.0:.1f}")
         if not result or "error" in result[0]:
             raise RuntimeError(result[0].get("error", "Unknown HM-Conformer inference error"))
         return {"deepfake_raw": float(result[0]["deepfake_score"])}
@@ -82,7 +95,10 @@ class HmConformerRunner:
         *,
         model_name: str = "hm-conformer",
         skip_missing: bool = False,
+        debug: bool = False,
     ) -> list[dict[str, Any]]:
+        if debug:
+            _debug_log(debug, f"run: {len(samples)} samples")
         results: list[dict[str, Any]] = []
         for sample in tqdm(samples, desc=f"{model_name} inference", unit="sample"):
             audio_path = Path(sample["resolved_audio_path"])
@@ -91,8 +107,10 @@ class HmConformerRunner:
                     continue
                 raise FileNotFoundError(f"Audio file not found for {sample['sample_id']}: {audio_path}")
 
+            if debug:
+                _debug_log(debug, f"sample_id={sample['sample_id']} path={audio_path}")
             started = time.perf_counter()
-            raw = self.predict_file(audio_path)
+            raw = self.predict_file(audio_path, debug=debug)
             runtime_ms = (time.perf_counter() - started) * 1000.0
 
             scores = scores_from_hm_conformer(raw["deepfake_raw"])
