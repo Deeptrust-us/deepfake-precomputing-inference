@@ -151,6 +151,7 @@ Useful flags:
 | `--batch-size N` | Quad-stream batch size (default from model config) |
 | `--num-workers N` | Quad-stream DataLoader workers (default: auto) |
 | `--cpu-threads N` | PyTorch/BLAS threads for quad-stream CPU inference |
+| `--prefetch-factor N` | Quad-stream DataLoader prefetch depth per worker |
 | `--run-id ID` | Override the default `YYYY-MM-DD_<model-name>` folder name |
 
 Example output:

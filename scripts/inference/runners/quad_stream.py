@@ -41,7 +41,13 @@ def _default_num_workers(cpu_threads: int) -> int:
     cpu_count = os.cpu_count() or 1
     if cpu_count <= 1:
         return 0
-    return max(1, min(4, cpu_count - max(1, cpu_threads // 2)))
+    return max(1, min(4, cpu_count - 1))
+
+
+def _maybe_to_device(tensor: torch.Tensor, device: torch.device) -> torch.Tensor:
+    if device.type == "cpu":
+        return tensor
+    return tensor.to(device, non_blocking=True)
 
 
 def _entries_from_samples(samples: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -207,6 +213,7 @@ class QuadStreamRunner:
         batch_size: int | None = None,
         num_workers: int | None = None,
         cpu_threads: int | None = None,
+        prefetch_factor: int | None = None,
     ) -> list[dict[str, Any]]:
         quad_stream_dir, config_path = self._repo_paths()
         if str(quad_stream_dir) not in sys.path:
@@ -250,14 +257,14 @@ class QuadStreamRunner:
         }
         if resolved_workers > 0:
             loader_kwargs["persistent_workers"] = True
-            loader_kwargs["prefetch_factor"] = 2
+            loader_kwargs["prefetch_factor"] = prefetch_factor or 4
 
         dataloader = DataLoader(dataset, **loader_kwargs)
 
         results: list[dict[str, Any]] = []
         batch_index = 0
         data_iter = iter(dataloader)
-        with torch.no_grad(), tqdm(
+        with torch.inference_mode(), tqdm(
             total=len(dataset),
             desc=f"{model_name} inference",
             unit="sample",
@@ -279,15 +286,15 @@ class QuadStreamRunner:
                     sample_ids = [sample_id]
 
                 transfer_started = time.perf_counter()
-                segment_stft = batch["segment_stft"].to(self._device)
-                segment_logmel = batch["segment_logmel"].to(self._device)
-                full_stft = batch["full_stft"].to(self._device)
-                full_logmel = batch["full_logmel"].to(self._device)
+                segment_stft = _maybe_to_device(batch["segment_stft"], self._device)
+                segment_logmel = _maybe_to_device(batch["segment_logmel"], self._device)
+                full_stft = _maybe_to_device(batch["full_stft"], self._device)
+                full_logmel = _maybe_to_device(batch["full_logmel"], self._device)
                 transfer_ms = (time.perf_counter() - transfer_started) * 1000.0
 
                 infer_started = time.perf_counter()
                 outputs = model(segment_stft, segment_logmel, full_stft, full_logmel).view(-1)
-                probas = outputs.detach().cpu().numpy()
+                probas = outputs.cpu().numpy()
                 infer_ms = (time.perf_counter() - infer_started) * 1000.0
                 runtime_ms = infer_ms / max(len(sample_ids), 1)
 
@@ -300,8 +307,6 @@ class QuadStreamRunner:
                     )
 
                 for sid, proba in zip(sample_ids, probas):
-                    if sid not in sample_lookup:
-                        continue
                     sample = sample_lookup[sid]
                     scores = scores_from_quad_stream(float(proba))
                     prediction = scores["prediction"]

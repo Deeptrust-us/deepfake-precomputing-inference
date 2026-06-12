@@ -115,6 +115,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="PyTorch/BLAS CPU threads for quad-stream inference (default: min(4, cpu_count)).",
     )
+    parser.add_argument(
+        "--prefetch-factor",
+        type=int,
+        default=None,
+        help="Quad-stream DataLoader prefetch batches per worker (default: 4 when num_workers > 0).",
+    )
     return parser.parse_args()
 
 
@@ -226,6 +232,7 @@ def main() -> int:
             batch_size=args.batch_size,
             num_workers=args.num_workers,
             cpu_threads=args.cpu_threads,
+            prefetch_factor=args.prefetch_factor,
         )
 
     if args.skip_missing:

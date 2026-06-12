@@ -11,6 +11,7 @@ if str(QUAD_STREAM_DIR) not in sys.path:
 
 from src.data.dataset import (  # noqa: E402
     DeepfakeDataset,
+    SegmentFeatureIndex,
     build_segment_feature_index,
     segment_stem_from_filename,
 )
@@ -34,6 +35,16 @@ def test_build_segment_feature_index_resolves_unique_stems(tmp_path: Path):
 
     index = build_segment_feature_index(seg_dir)
     assert index.resolve("000001") == target
+
+
+def test_segment_feature_index_cache_reuses_build(tmp_path: Path):
+    seg_dir = tmp_path / "segment_stft"
+    _write_feature(seg_dir / "000001_0.npy")
+
+    first = SegmentFeatureIndex.load_or_build(seg_dir)
+    second = SegmentFeatureIndex.load_or_build(seg_dir)
+    assert first.resolve("000001") == second.resolve("000001")
+    assert (seg_dir / ".segment_feature_index.json").exists()
 
 
 def test_build_segment_feature_index_tracks_ambiguous_stems(tmp_path: Path):

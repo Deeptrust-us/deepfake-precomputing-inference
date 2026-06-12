@@ -54,6 +54,55 @@ class SegmentFeatureIndex:
             raise FileNotFoundError(f"Missing segment feature for stem={stem!r}.")
         return path
 
+    @classmethod
+    def load_or_build(cls, directory: Path, *, debug: bool = False) -> SegmentFeatureIndex:
+        cache_file = directory / ".segment_feature_index.json"
+        dir_mtime: float | None = None
+        if directory.exists():
+            try:
+                dir_mtime = directory.stat().st_mtime
+            except OSError:
+                dir_mtime = None
+
+        if cache_file.exists() and dir_mtime is not None:
+            try:
+                cached = json.loads(cache_file.read_text(encoding="utf-8"))
+                if cached.get("dir_mtime") == dir_mtime:
+                    paths = {
+                        stem: directory / rel_path
+                        for stem, rel_path in cached.get("paths", {}).items()
+                    }
+                    ambiguous = {
+                        stem: [directory / rel_path for rel_path in rel_paths]
+                        for stem, rel_paths in cached.get("ambiguous", {}).items()
+                    }
+                    if debug:
+                        print(
+                            f"[debug][dataset] loaded cached index for {directory.name}: "
+                            f"stems={len(paths)} ambiguous={len(ambiguous)}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                    return cls(paths=paths, ambiguous=ambiguous)
+            except (json.JSONDecodeError, OSError, TypeError):
+                pass
+
+        index = build_segment_feature_index(directory, debug=debug)
+        if directory.exists() and dir_mtime is not None:
+            payload = {
+                "dir_mtime": dir_mtime,
+                "paths": {stem: path.name for stem, path in index.paths.items()},
+                "ambiguous": {
+                    stem: [path.name for path in paths]
+                    for stem, paths in index.ambiguous.items()
+                },
+            }
+            try:
+                cache_file.write_text(json.dumps(payload), encoding="utf-8")
+            except OSError:
+                pass
+        return index
+
 
 def build_segment_feature_index(directory: Path, *, debug: bool = False) -> SegmentFeatureIndex:
     """Scan a segment feature directory once and build stem -> path lookups."""
@@ -81,6 +130,12 @@ def build_segment_feature_index(directory: Path, *, debug: bool = False) -> Segm
     paths = {stem: matches[0] for stem, matches in grouped.items() if len(matches) == 1}
     ambiguous = {stem: matches for stem, matches in grouped.items() if len(matches) > 1}
     return SegmentFeatureIndex(paths=paths, ambiguous=ambiguous)
+
+
+def _numpy_to_float32_tensor(array: np.ndarray) -> torch.Tensor:
+    if array.dtype != np.float32:
+        array = array.astype(np.float32, copy=False)
+    return torch.from_numpy(array)
 
 
 class DeepfakeDataset(Dataset):
@@ -125,11 +180,11 @@ class DeepfakeDataset(Dataset):
                 raise ValueError(f"{self.labels_file} must be a JSON list of entries")
             self.entries = self._validate_entries(raw)
 
-        self._segment_stft_index = build_segment_feature_index(
+        self._segment_stft_index = SegmentFeatureIndex.load_or_build(
             self.features_dir / "segment_stft",
             debug=debug,
         )
-        self._segment_logmel_index = build_segment_feature_index(
+        self._segment_logmel_index = SegmentFeatureIndex.load_or_build(
             self.features_dir / "segment_logmel",
             debug=debug,
         )
@@ -144,6 +199,8 @@ class DeepfakeDataset(Dataset):
                 except FileNotFoundError:
                     continue
             self.entries = ready
+
+        self._path_cache = self._build_path_cache()
 
     @staticmethod
     def _validate_entries(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -161,6 +218,16 @@ class DeepfakeDataset(Dataset):
 
     def __len__(self) -> int:
         return len(self.entries)
+
+    def _build_path_cache(self) -> dict[str, dict[str, Path]]:
+        cache: dict[str, dict[str, Path]] = {}
+        for entry in self.entries:
+            stem = Path(entry["filename"]).stem
+            if stem not in cache:
+                cache[stem] = self._resolve_feature_paths(stem)
+        if self.debug:
+            self._debug(f"precomputed feature paths for {len(cache)} stems")
+        return cache
 
     def _debug(self, message: str) -> None:
         if self.debug:
@@ -200,22 +267,20 @@ class DeepfakeDataset(Dataset):
         if self.debug:
             self._debug(f"getitem start idx={idx} stem={stem}")
 
-        paths = self._resolve_feature_paths(stem)
+        paths = self._path_cache[stem]
 
-        feats: Dict[str, np.ndarray] = {}
+        tensors: Dict[str, torch.Tensor] = {}
         for kind, path in paths.items():
             load_started = time.perf_counter()
-            feats[kind] = np.load(str(path))
+            array = np.load(str(path), allow_pickle=False)
+            tensors[kind] = _numpy_to_float32_tensor(array)
             if self.debug:
                 load_ms = (time.perf_counter() - load_started) * 1000.0
-                self._debug(f"np.load kind={kind} path={path.name} elapsed_ms={load_ms:.1f}")
+                self._debug(f"load kind={kind} path={path.name} elapsed_ms={load_ms:.1f}")
 
-        tensor_started = time.perf_counter()
-        tensors = {k: torch.from_numpy(v).to(torch.float32) for k, v in feats.items()}
         if self.debug:
-            tensor_ms = (time.perf_counter() - tensor_started) * 1000.0
             total_ms = (time.perf_counter() - item_started) * 1000.0
-            self._debug(f"tensor convert elapsed_ms={tensor_ms:.1f} getitem total_ms={total_ms:.1f}")
+            self._debug(f"getitem total_ms={total_ms:.1f}")
 
         for k, t in tensors.items():
             if t.ndim != 3 or t.shape[0] != 1:
